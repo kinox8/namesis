@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAMESIS 3D 試作</title>
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #1a1420; --panel: rgba(28, 22, 36, 0.86); --line: rgba(255, 255, 255, 0.14); --fg: #fff; --muted: #b9adc8; --accent: #ff9a3c; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: "M PLUS Rounded 1c", sans-serif; overflow: hidden; }
+  #view { position: fixed; inset: 0; }
+  .ui { position: fixed; left: 16px; top: 16px; right: 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; pointer-events: none; }
+  .ui > * { pointer-events: auto; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 8px 10px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  input { font: inherit; font-size: 16px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); color: #fff; width: 9em; }
+  button { font: inherit; font-weight: 800; padding: 6px 12px; border-radius: 10px; border: 1px solid var(--line); background: #3a2f48; color: #fff; cursor: pointer; }
+  button.on, button.primary { background: var(--accent); color: #2a1408; }
+  .info { position: fixed; left: 16px; bottom: 16px; max-width: calc(100% - 32px); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 8px 12px; font-size: 13px; color: var(--muted); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .info b { color: #fff; }
+  .cmp { display: flex; gap: 4px; }
+  .cmp img { width: 54px; height: 76px; background: rgba(255, 255, 255, 0.06); border-radius: 8px; }
+  .hint { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div class="ui">
+  <div class="box">
+    <input id="name" value="たろう" maxlength="12" aria-label="名前">
+    <button class="primary" id="go">表示</button>
+    <button id="rand">ランダム 4人</button>
+  </div>
+  <div class="box">
+    <button id="rot" class="on">自動回転</button>
+    <button id="front">正面</button>
+    <button id="party">いまの パーティ</button>
+    <span class="hint">ドラッグで 回す ・ ホイールで 近づく</span>
+  </div>
+</div>
+<div class="info" id="info"></div>
+
+<script src="js/rng.js"></script>
+<script src="js/data.js"></script>
+<script src="js/chargen.js"></script>
+<script src="js/engine3d.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/figure.js"></script>
+<script src="js/monster.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { buildCharacter, poseCharacter } from './js/fig3d.js';
+
+// 3D の 試作: 名前から 生まれる キャラを 今の 2D と 同じ 値 (色・頭の形・体型・背・顔) で 立体に 組み立てる
+const NS = globalThis.NS;
+
+// ---------------- 場面 ----------------
+const view = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#2a2034');
+scene.fog = new THREE.Fog('#2a2034', 9, 22);
+const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 60);
+camera.position.set(0, 1.4, 4.2);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.6, 0);
+controls.enableDamping = true;
+controls.minDistance = 1.2; controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.autoRotate = true; controls.autoRotateSpeed = 1.2;
+
+scene.add(new THREE.HemisphereLight('#fff4e0', '#4a3a5a', 1.1));
+const sun = new THREE.DirectionalLight('#fff2dc', 2.2);
+sun.position.set(-3, 6, 4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5, near: 1, far: 20 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+const rim = new THREE.DirectionalLight('#b8a0ff', 0.8);
+rim.position.set(3, 3, -4);
+scene.add(rim);
+
+// 床: コロシアムの 砂地 (まるい 石の ふち)
+{
+  const cv = document.createElement('canvas'); cv.width = cv.height = 512;
+  const c = cv.getContext('2d');
+  const g = c.createRadialGradient(256, 256, 30, 256, 256, 256);
+  g.addColorStop(0, '#d9b98a'); g.addColorStop(0.8, '#b38f62'); g.addColorStop(1, '#7a5a3a');
+  c.fillStyle = g; c.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 3000; i++) { c.fillStyle = `rgba(${Math.random() < 0.5 ? '255,240,210' : '90,60,30'},${Math.random() * 0.12})`; c.fillRect(Math.random() * 512, Math.random() * 512, 2, 2); }
+  c.strokeStyle = 'rgba(255,220,150,0.35)'; c.lineWidth = 4; c.beginPath(); c.arc(256, 256, 180, 0, Math.PI * 2); c.stroke();
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(9, 64), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+  scene.add(floor);
+}
+
+// キャラの 組み立ては ゲームと 同じ js/fig3d.js
+function buildShadowed(ch) { const o = buildCharacter(ch); o.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } }); return o; }
+
+// ---------------- 表示 ----------------
+const shown = [];
+function show(names) {
+  for (const o of shown) { scene.remove(o); o.traverse((x) => { if (x.geometry) x.geometry.dispose(); }); }
+  shown.length = 0;
+  // 名前@装備+装備 (例: たろう@jewel+hakai) で 装備を つける
+  const chars = names.map((n) => { if (typeof n !== 'string') return n; const [nm, e] = n.split('@'); const c = NS.makeCharacter(nm); return e ? NS.withEquip(c, e.split(/[+ ]/)) : c; }).filter(Boolean);
+  const sp = 0.95;
+  chars.forEach((c, i) => {
+    const o = buildShadowed(c);
+    o.position.x = (i - (chars.length - 1) / 2) * sp;
+    scene.add(o); shown.push(o);
+  });
+  const far = chars.length > 1 ? 2.2 + chars.length * 0.5 : 2.6;
+  camera.position.set(0, 1.0 + far * 0.15, far); controls.target.set(0, 0.55, 0); lastFar = far;
+  const info = document.getElementById('info');
+  info.innerHTML = chars.map((c) => `<span><b>${esc(c.name)}</b> ${NS.COLORS[c.color].name}・${NS.HEADS.find((h) => h.key === c.head).name}${c.aura ? '・オーラ' : ''} ${c.rank}</span>`).join('')
+    + `<span class="cmp" title="今の 2D の 絵">${chars.map((c) => `<img src="${NS.bodyThumb(c, 54, 76)}" alt="">`).join('')}</span><span class="hint">← 今の 2D</span>`;
+}
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+document.getElementById('go').onclick = () => { const n = NS.normalizeName(document.getElementById('name').value); if (n) show([n]); };
+document.getElementById('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('go').click(); });
+const SYL = 'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわん';
+document.getElementById('rand').onclick = () => show(Array.from({ length: 4 }, () => Array.from({ length: 2 + Math.floor(Math.random() * 3) }, () => SYL[Math.floor(Math.random() * SYL.length)]).join('')));
+document.getElementById('rot').onclick = (e) => { controls.autoRotate = !controls.autoRotate; e.target.classList.toggle('on', controls.autoRotate); };
+let lastFar = 2.6;
+document.getElementById('front').onclick = () => { camera.position.set(0, 1.0 + lastFar * 0.15, lastFar); controls.target.set(0, 0.55, 0); };
+document.getElementById('party').onclick = () => {
+  let sv = null;
+  try { sv = JSON.parse(localStorage.getItem('namesis.save.v1') || 'null'); } catch (e) { /* noop */ }
+  const keys = (sv && sv.party || []).filter((k) => !NS.isSpecial || !NS.isSpecial(k));
+  if (keys.length) show(keys.slice(0, 8)); else show(['たろう', 'はなこ', 'ゆうま', 'みどり']);
+};
+
+// ---------------- うごき ----------------
+const clock = new THREE.Clock();
+function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+renderer.setAnimationLoop(() => {
+  const t = clock.getElapsedTime();
+  for (const o of shown) poseCharacter(o, t);
+  controls.update();
+  renderer.render(scene, camera);
+});
+const qn = new URLSearchParams(location.search).get('names'); // ?names=たろう,はなこ
+show(qn ? qn.split(',').slice(0, 8) : ['たろう', 'はなこ', 'ゆうま', 'みどり']);
+</script>
+</body>
+</html>
